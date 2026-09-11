@@ -70,3 +70,31 @@ def test_secrets_are_not_printed_in_repr():
 def test_invalid_values_are_rejected(overrides):
     with pytest.raises(ValidationError):
         _settings(**overrides)
+
+
+# ---- Trading 212 specifics -------------------------------------------------
+def test_t212_cost_defaults():
+    """Invest/ISA: no commission, 0.15% FX fee."""
+    s = _settings()
+    assert s.commission_bps == 0.0
+    assert s.fx_fee_bps == 15.0
+    assert s.min_order_value == 1.0
+
+
+def test_shorting_is_off_by_default():
+    """Invest and Stocks ISA accounts cannot sell short."""
+    assert _settings().allow_short is False
+
+
+def test_base_currency_is_normalised_and_validated():
+    assert _settings(base_currency="gbp").base_currency == "GBP"
+    with pytest.raises(ValidationError, match="3-letter ISO"):
+        _settings(base_currency="POUNDS")
+
+
+def test_fx_symbols_must_be_in_the_universe():
+    """A typo here would understate costs by 15bps per side, silently."""
+    ok = _settings(symbols="AAPL_US_EQ,MSFT_US_EQ", fx_symbols="AAPL_US_EQ")
+    assert ok.fx_symbols == ("AAPL_US_EQ",)
+    with pytest.raises(ValidationError, match="not in the universe"):
+        _settings(symbols="AAPL_US_EQ", fx_symbols="TYPO_US_EQ")

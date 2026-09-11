@@ -15,6 +15,8 @@ Design notes worth knowing before Phase 3:
   set explicitly rather than inherited from a default. Phase 3 code should
   refuse to arm the hard-stop while these are `None`.
 * Kelly sizing is off by default (`sizing_mode="vol_target"`).
+* `allow_short` defaults to False. Trading 212 Invest and Stocks ISA accounts
+  cannot sell short, so a signed signal can only ever express long-or-flat.
 """
 
 from __future__ import annotations
@@ -59,10 +61,25 @@ class Settings(BaseSettings):
     environment: Environment = Environment.BACKTEST
 
     # ---- universe & data -------------------------------------------------
+    #: Trading 212 instrument tickers, e.g. "AAPL_US_EQ". Its API uses its own
+    #: ticker format, which does NOT match the market-data provider's — the
+    #: Phase 6 adapter needs a mapping table, not string equality.
     symbols: tuple[str, ...] = ()
     timeframe: str = "1d"
     data_cache_dir: Path = REPO_ROOT / "data_cache"
-    exchange_id: str = "binance"  # ccxt id; ignored if a different SDK is wired
+
+    #: Trading 212 has no historical price endpoint, so bars come from elsewhere.
+    market_data_provider: str = "csv"
+
+    # ---- broker: Trading 212 --------------------------------------------
+    #: Account base currency. Every instrument priced in anything else incurs
+    #: the FX fee on both legs of every trade.
+    base_currency: str = "GBP"
+    #: Invest and Stocks ISA cannot short. Leave False unless the broker changes.
+    allow_short: bool = False
+    #: Instruments not denominated in `base_currency`, which therefore pay the
+    #: FX fee. For a GBP account trading US stocks, this is all of them.
+    fx_symbols: tuple[str, ...] = ()
 
     # ---- risk (see module docstring) -------------------------------------
     account_equity: float = Field(default=100_000.0, gt=0)
@@ -76,8 +93,13 @@ class Settings(BaseSettings):
     kelly_fraction: float = Field(default=0.25, gt=0, le=1)
 
     # ---- backtest fill model --------------------------------------------
-    commission_bps: float = Field(default=5.0, ge=0)
+    #: Zero on Trading 212 Invest/ISA — there is no per-trade commission.
+    commission_bps: float = Field(default=0.0, ge=0)
+    #: Trading 212's 0.15% FX conversion fee.
+    fx_fee_bps: float = Field(default=15.0, ge=0)
     slippage_bps: float = Field(default=2.0, ge=0)
+    #: Orders below this notional are rejected by the broker.
+    min_order_value: float = Field(default=1.0, ge=0)
 
     # ---- secrets ---------------------------------------------------------
     broker_api_key: SecretStr | None = None
@@ -87,10 +109,10 @@ class Settings(BaseSettings):
     telegram_chat_id: int | None = None
 
     # ---- validation ------------------------------------------------------
-    @field_validator("symbols", mode="before")
+    @field_validator("symbols", "fx_symbols", mode="before")
     @classmethod
     def _split_symbols(cls, v: object) -> object:
-        """Accept `KESTREL_SYMBOLS=BTC/USDT,ETH/USDT` as well as a real list."""
+        """Accept `KESTREL_SYMBOLS=AAPL_US_EQ,MSFT_US_EQ` as well as a real list."""
         if isinstance(v, str):
             return tuple(s.strip() for s in v.split(",") if s.strip())
         return v
@@ -110,6 +132,25 @@ class Settings(BaseSettings):
                 "environment='live' is not supported yet. Live execution is gated "
                 "behind Phase 6 sign-off after reviewing paper-trading results."
             )
+        return self
+
+    @field_validator("base_currency")
+    @classmethod
+    def _currency_code(cls, v: str) -> str:
+        code = v.strip().upper()
+        if len(code) != 3 or not code.isalpha():
+            raise ValueError(f"base_currency must be a 3-letter ISO code, got {v!r}")
+        return code
+
+    @model_validator(mode="after")
+    def _fx_symbols_are_in_the_universe(self) -> Settings:
+        """A typo in `fx_symbols` would silently understate costs by 15bps a side."""
+        if self.symbols:
+            unknown = set(self.fx_symbols) - set(self.symbols)
+            if unknown:
+                raise ValueError(
+                    f"fx_symbols contains symbols not in the universe: {sorted(unknown)}"
+                )
         return self
 
     @model_validator(mode="after")
