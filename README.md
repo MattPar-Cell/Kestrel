@@ -5,7 +5,8 @@ live execution is gated behind an explicit sign-off.
 
 ## Status
 
-Phase 0 (scaffolding) complete. Nothing else is implemented.
+Phases 0–1 are done. Phase 4's building blocks (Signal transport, message text,
+portfolio tracker, weekly summary) are in, but nothing generates trades yet.
 
 | Phase | Scope | State |
 |---|---|---|
@@ -13,9 +14,25 @@ Phase 0 (scaffolding) complete. Nothing else is implemented.
 | 1 | Market data ingestion + event-driven backtest harness | done |
 | 2 | First signal: EMA spread / ATR momentum | not started |
 | 3 | Position sizing, portfolio constraints, metrics | not started |
-| 4 | Telegram notifications (read-only) | not started |
+| 4 | Signal notifications + portfolio tracker | building blocks done |
 | 5 | News/sentiment signal (optional) | not started |
 | 6 | Paper trading | not started |
+
+### What is still missing before a Signal message means anything
+
+1. **A market-data adapter.** Only synthetic bars exist. Stocks need a provider
+   (Trading 212 has no price history); crypto can use Kraken's public OHLC.
+2. **A strategy (Phase 2)** and a **sizer + risk gate (Phase 3)**. "Buy £X of Y"
+   is exactly what these two produce. Until they exist and have been
+   walk-forward tested, a recommendation is a number with nothing behind it.
+3. **Read-only venue adapters** — Trading 212 and Kraken → `Snapshot`, plus a
+   GBP conversion for crypto balances. The tracker is built from these.
+4. **A scheduler**: a daily job (decide after close → Signal message; append a
+   snapshot) and a weekly job (summary → Signal). Cron or a systemd timer is
+   enough; the job must run somewhere that is always on.
+5. **The drawdown hard-stop choice** (still deliberately blank).
+6. **A crypto cost model.** The fill model knows Trading 212's FX fee, not
+   Kraken's maker/taker fees or crypto's 24/7 sessions.
 
 Live-money execution is not in this table. It happens only after Phase 6 results
 are reviewed; `KESTREL_ENVIRONMENT=live` is rejected by config validation today.
@@ -29,7 +46,8 @@ kestrel/
   strategy/   signal generation logic
   risk/       position sizing, portfolio constraints, metrics
   execution/  broker order interface (paper/sandbox first)
-  notify/     telegram
+  notify/     Signal messages: recommendation + weekly summary text, transport
+  tracker/    portfolio snapshots, snapshot log, weekly summary
   backtest/   event-driven backtesting harness
   config/     settings + secrets loading (pydantic-settings)
 tests/
@@ -130,6 +148,74 @@ is not safe here.
 
 Sources: [Trading 212 API docs](https://docs.trading212.com/api),
 [rate limiting](https://docs.trading212.com/api/section/rate-limiting/how-it-works).
+
+## Crypto: Kraken, alongside Trading 212
+
+Trading 212's public API reaches Invest and Stocks ISA only; its crypto product
+is not exposed through it. Crypto therefore lives at a second venue, and Kestrel
+treats the two as separate: separate key pairs (`BROKER_*` and `CRYPTO_*`),
+separate adapters, one combined `Snapshot` in GBP. Kraken is the choice because
+it is FCA-registered, has a long-standing REST API with per-key permission
+scopes, and serves free public OHLC history, so it covers crypto data too.
+
+## Setup: keys and Signal
+
+Kestrel's default mode is **advisory**: it messages you and *you* place the
+trade. In that mode no key needs permission to trade — read scopes are enough,
+and a leaked key cannot move money. Only Phase 6 automated execution would need
+order scopes, and then only on the demo key first.
+
+**Trading 212** (app → Settings → API (Beta) → Generate API key). Create it on
+the *practice* account first; demo and live keys are separate. Enable
+account data, portfolio, history, and metadata scopes; leave order execution
+and pies-write off. Restrict it to your server's IP if you can. The secret is
+shown once — put both values in `.env` as `KESTREL_BROKER_API_KEY` /
+`KESTREL_BROKER_API_SECRET`.
+
+**Kraken** (Settings → API → Create API key). Tick *Query Funds*, *Query Open
+Orders & Trades*, *Query Closed Orders & Trades*. Leave *Create & Modify
+Orders*, *Cancel/Close Orders*, and above all **Withdraw Funds** unticked. Store
+as `KESTREL_CRYPTO_API_KEY` / `KESTREL_CRYPTO_API_SECRET`.
+
+**Signal.** Signal has no bot API; run the `bbernhard/signal-cli-rest-api`
+container and link it to a Signal account as a secondary device. A spare number
+is cleanest — then the messages arrive as from someone else rather than in your
+"Note to self".
+
+```bash
+docker run -d --name signal-api --restart=always -p 127.0.0.1:8080:8080 \
+  -v $HOME/.local/share/signal-api:/home/.local/share/signal-cli \
+  -e MODE=native bbernhard/signal-cli-rest-api
+# open http://localhost:8080/v1/qrcodelink?device_name=kestrel and scan it from
+# Signal → Settings → Linked devices, then test:
+curl -X POST localhost:8080/v2/send -H 'Content-Type: application/json' \
+  -d '{"message":"kestrel test","number":"+44...","recipients":["+44..."]}'
+```
+
+Bind it to `127.0.0.1` as above: anyone who can reach that port can send
+messages as you. Then set `KESTREL_SIGNAL_SENDER` and
+`KESTREL_SIGNAL_RECIPIENTS`.
+
+### What the messages look like
+
+A recommendation says what, how much (as money *and* as a share of the
+portfolio now), and a window after which to ignore it:
+
+```
+Kestrel: 1 trade
+Portfolio £10,000.00 · cash £2,500.00 (25.0%)
+
+1. BUY AAPL_US_EQ
+   £1,000.00 (10.0% of portfolio) ≈ 5 @ £200.00
+   When: Mon 05 Oct 14:30–15:30 (Europe/London)
+   Stop: £185.00
+   Why: ema_cross_up
+
+Skip any trade you see after its window closes.
+```
+
+The weekly summary reports P&L with deposits excluded, the worst dip of the
+week, trades and fees, cash, holdings by weight, and the biggest movers.
 
 ## What Phase 1 contains
 

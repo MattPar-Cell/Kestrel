@@ -51,7 +51,7 @@ def test_paper_environment_requires_broker_key():
 
 
 def test_secrets_are_not_printed_in_repr():
-    s = _settings(telegram_bot_token="super-secret-token")
+    s = _settings(crypto_api_secret="super-secret-token")
     assert "super-secret-token" not in repr(s)
 
 
@@ -98,3 +98,15 @@ def test_fx_symbols_must_be_in_the_universe():
     assert ok.fx_symbols == ("AAPL_US_EQ",)
     with pytest.raises(ValidationError, match="not in the universe"):
         _settings(symbols="AAPL_US_EQ", fx_symbols="TYPO_US_EQ")
+
+
+def test_signal_recipients_parse_and_configured_flag():
+    s = _settings(signal_sender="+447700900123", signal_recipients="+447700900456, group.abc=")
+    assert s.signal_recipients == ("+447700900456", "group.abc=")
+    assert s.signal_configured is True
+    assert _settings(signal_sender="+447700900123").signal_configured is False
+
+
+def test_signal_sender_must_be_international_format():
+    with pytest.raises(ValidationError, match="E.164"):
+        _settings(signal_sender="07700900123")

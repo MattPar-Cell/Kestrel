@@ -17,6 +17,9 @@ Design notes worth knowing before Phase 3:
 * Kelly sizing is off by default (`sizing_mode="vol_target"`).
 * `allow_short` defaults to False. Trading 212 Invest and Stocks ISA accounts
   cannot sell short, so a signed signal can only ever express long-or-flat.
+* Stocks and crypto live at different venues. Trading 212's public API covers
+  Invest/ISA only — its crypto product is not reachable through it — so crypto
+  balances come from a separate exchange (Kraken) with its own key pair.
 """
 
 from __future__ import annotations
@@ -101,15 +104,32 @@ class Settings(BaseSettings):
     #: Orders below this notional are rejected by the broker.
     min_order_value: float = Field(default=1.0, ge=0)
 
+    # ---- notifications: Signal ------------------------------------------
+    #: Base URL of a signal-cli-rest-api instance you run yourself. Signal has no
+    #: official bot API; this container holds a linked Signal device.
+    signal_api_url: str = "http://localhost:8080"
+    #: The Signal number the bot sends *from* (E.164, e.g. "+447700900123").
+    signal_sender: str | None = None
+    #: Who receives messages: E.164 numbers or Signal group ids.
+    signal_recipients: tuple[str, ...] = ()
+    #: Times in messages are shown in this zone.
+    display_timezone: str = "Europe/London"
+    #: Where the portfolio tracker appends its daily snapshots.
+    snapshot_log: Path = REPO_ROOT / "data_cache" / "snapshots.jsonl"
+
     # ---- secrets ---------------------------------------------------------
+    #: Trading 212 key pair (stocks/ETFs).
     broker_api_key: SecretStr | None = None
     broker_api_secret: SecretStr | None = None
+    #: Kraken key pair (crypto). Read-only permissions are enough for tracking.
+    crypto_api_key: SecretStr | None = None
+    crypto_api_secret: SecretStr | None = None
+    #: Market-data provider key (stock bars). Kraken's OHLC endpoint is public.
+    market_data_api_key: SecretStr | None = None
     news_api_key: SecretStr | None = None
-    telegram_bot_token: SecretStr | None = None
-    telegram_chat_id: int | None = None
 
     # ---- validation ------------------------------------------------------
-    @field_validator("symbols", "fx_symbols", mode="before")
+    @field_validator("symbols", "fx_symbols", "signal_recipients", mode="before")
     @classmethod
     def _split_symbols(cls, v: object) -> object:
         """Accept `KESTREL_SYMBOLS=AAPL_US_EQ,MSFT_US_EQ` as well as a real list."""
@@ -153,6 +173,25 @@ class Settings(BaseSettings):
                 )
         return self
 
+    @field_validator("display_timezone")
+    @classmethod
+    def _known_timezone(cls, v: str) -> str:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise ValueError(f"display_timezone must be an IANA zone name, got {v!r}") from e
+        return v
+
+    @field_validator("signal_sender")
+    @classmethod
+    def _e164(cls, v: str | None) -> str | None:
+        """signal-cli addresses accounts by international number; a local one fails late."""
+        if v is not None and not (v.startswith("+") and v[1:].isdigit()):
+            raise ValueError(f"signal_sender must be an E.164 number like +447700900123, got {v!r}")
+        return v
+
     @model_validator(mode="after")
     def _paper_needs_broker_creds(self) -> Settings:
         if self.environment is Environment.PAPER and not self.broker_api_key:
@@ -160,6 +199,10 @@ class Settings(BaseSettings):
         return self
 
     # ---- derived ---------------------------------------------------------
+    @property
+    def signal_configured(self) -> bool:
+        return self.signal_sender is not None and bool(self.signal_recipients)
+
     @property
     def drawdown_stop_configured(self) -> bool:
         """True once the operator has made a deliberate drawdown-stop choice."""
