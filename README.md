@@ -20,18 +20,18 @@ portfolio tracker, weekly summary) are in, but nothing generates trades yet.
 
 ### What is still missing before a Signal message means anything
 
-1. **A market-data adapter.** Only synthetic bars exist. eToro's candles can
-   supply both stocks and crypto.
-2. **A strategy (Phase 2)** and a **sizer + risk gate (Phase 3)**. "Buy £X of Y"
+1. **A market-data adapter.** Only synthetic bars exist. Webull's Market Data
+   API can supply both stocks and crypto.
+2. **A strategy (Phase 2)** and a **sizer + risk gate (Phase 3)**. "Buy $X of Y"
    is exactly what these two produce. Until they exist and have been
    walk-forward tested, a recommendation is a number with nothing behind it.
-3. **A read-only eToro adapter** — account → `Snapshot`, converted to GBP. The
-   tracker is built from it.
+3. **A read-only Webull adapter** — account → `Snapshot`. The tracker is built
+   from it.
 4. **A scheduler**: a daily job (decide after close → Signal message; append a
    snapshot) and a weekly job (summary → Signal). Cron or a systemd timer is
    enough; the job must run somewhere that is always on.
 5. **The drawdown hard-stop choice** (still deliberately blank).
-6. **Crypto's 24/7 calendar.** The fee model knows eToro's 1% crypto fee, but
+6. **Crypto's 24/7 calendar.** The fee model knows Webull's 1% crypto spread, but
    annualisation and the "next open" timing in messages assume a market that
    closes. Crypto does not.
 
@@ -111,60 +111,62 @@ Two things are deliberately *not* defaulted:
 `KESTREL_RISK_PER_TRADE` defaults to 0.005 (0.5%) — the conservative end of the
 0.5–1% range, not a silent pick in the middle.
 
-## Broker: eToro
+## Broker: Webull
 
-One eToro account holds stocks, ETFs, and crypto, behind one API key pair. Four
-of its properties shape this codebase.
+One Webull account holds stocks, ETFs, and crypto, behind one App Key / App
+Secret pair. Four of its properties shape this codebase.
 
-**1. Shorts and leverage turn a trade into a CFD.** On eToro, a "Sell" opening
-or any leverage above 1x does not buy the asset. It opens a CFD, which you do
-not own and which charges overnight fees. Kestrel therefore only ever
-recommends **Buy at 1x** and selling what is already held. `allow_short`
-defaults to `False` and the fill model clamps a sell to the quantity held. A
-signal expresses long-or-flat, which halves the opportunity set and makes
-results lopsided in a downtrend — build around it in Phase 2.
+**1. What the API reaches depends on your Webull region.** Each region (US, HK,
+SG, AU, JP, MY, BR) is a separate company with its own API host and product
+list. A **US** account reaches stocks, ETFs, options, and crypto through the
+API. Malaysia's API (launched July 2026) covers US stocks and ETFs only. Check
+your region's developer portal before counting on crypto. Set
+`KESTREL_BROKER_REGION`.
 
-**2. Crypto costs 1% each side.** About 2% round trip, against zero commission on
-stocks. That gap decides what the crypto half of a strategy can be: anything
-that turns crypto over weekly will not clear it. List crypto instruments in
-`KESTREL_CRYPTO_SYMBOLS` so the backtest charges the fee.
+**2. Crypto costs 1% each side.** Webull charges no crypto commission but quotes
+1% away from the mid price on every buy and sell, so it costs the same as a
+fee. About 2% round trip, against zero commission on US stocks. That gap
+decides what the crypto half of a strategy can be: anything that turns crypto
+over weekly will not clear it. List crypto instruments in
+`KESTREL_CRYPTO_SYMBOLS` so the backtest charges it.
 
-**3. Currency conversion is 0.75%, and *when* you pay it is up to you.** eToro
-converts when money moves between your GBP and USD balances. Convert once into a
-USD balance and buy US stocks and crypto from it, and that is the only time you
-pay — leave `KESTREL_FX_SYMBOLS` empty. Buy them straight from a GBP balance and
-every trade converts, 0.75% each way (1.5% round trip, worse than the crypto
-fee); then list those instruments in `KESTREL_FX_SYMBOLS`. Config rejects a
-symbol that is not in the universe, so a typo cannot quietly remove a fee.
+**3. The defaults are the US fee schedule.** Zero stock commission, no
+per-trade currency conversion (the account is in USD; your local currency is
+converted once, on deposit), and a USD 5 fractional-order minimum. Other
+regions charge commission and platform fees on stocks: put the all-in rate in
+`KESTREL_COMMISSION_BPS`, or every backtest will look better than it is.
 
-**4. Minimum trade is USD 10, and the API trades by instrument id.** Symbols in
-config are eToro's (`AAPL`, `BTC`); the adapter resolves each to eToro's numeric
-instrument id once and caches it.
+**4. Long-or-flat.** Shorting needs a margin account and is impossible for
+crypto, so Kestrel assumes a cash account. `allow_short` defaults to `False`
+and the fill model clamps a sell to the quantity held. That halves the
+opportunity set and makes results lopsided in a downtrend; build around it in
+Phase 2.
 
-eToro's API also serves candles, so one key pair can cover prices as well as
-the account. `BarSource` and `Broker` stay separate protocols anyway, so a
-backtest never needs the broker to be reachable.
+Webull's Market Data API serves price bars too, so one key pair can cover
+prices as well as the account. `BarSource` and `Broker` stay separate protocols
+anyway, so a backtest never needs the broker to be reachable.
 
 ## Setup: keys and Signal
 
 Kestrel's default mode is **advisory**: it messages you and *you* place the
-trade in the eToro app. In that mode the key never needs permission to trade —
-**Read** is enough, and a leaked key cannot move money. Only Phase 6 automated
-execution would need **Write**, and only on a Demo key first.
+trade in the Webull app. The bot only ever reads your account.
 
-**eToro.** Verify your account, then **Settings → Trading → API Key
-Management → Create New Key**. Each key is bound to one environment, so make
-two:
+**Webull API key.** The API is not on by default; you apply for it.
 
-| Key | Environment | Permission | Used for |
-|---|---|---|---|
-| `kestrel-demo` | Demo | Read | development, `KESTREL_ENVIRONMENT=paper` |
-| `kestrel-real` | Real | Read | tracking your real portfolio |
+1. Open a Webull account and finish identity verification. The API
+   application is only possible once the account is open.
+2. On the Webull **website** (not the app), go to **OpenAPI Management → My
+   Application** and apply, saying it is for personal portfolio tracking and
+   trade alerts. Webull reviews it, typically in 1–2 business days.
+3. Once approved: **OpenAPI Management → App Management**, register an app,
+   then **Generate Key**. It asks for an SMS code and your trading password.
+4. Put the **App Key** in `KESTREL_BROKER_API_KEY` and the **App Secret** in
+   `KESTREL_BROKER_API_SECRET`.
 
-Each key comes as two values: the **Public API Key** (`x-api-key`) and the
-**User Key** (`x-user-key`). The User Key is shown **once** — paste it straight
-into `.env` as `KESTREL_BROKER_USER_KEY`, the other as `KESTREL_BROKER_API_KEY`.
-Anyone holding both can act on your account at whatever permission the key has.
+The App Secret signs requests and can place orders, so treat it like your
+trading password: never commit it, never paste it into chats or issues, and
+regenerate it if it leaks. If your region's portal offers IP whitelisting, use
+it.
 
 **Signal.** Signal has no bot API; run the `bbernhard/signal-cli-rest-api`
 container and link it to a Signal account as a secondary device. A spare number
@@ -192,12 +194,12 @@ portfolio now), and a window after which to ignore it:
 
 ```
 Kestrel: 1 trade
-Portfolio £10,000.00 · cash £2,500.00 (25.0%)
+Portfolio $10,000.00 · cash $2,500.00 (25.0%)
 
 1. BUY AAPL
-   £1,000.00 (10.0% of portfolio) ≈ 5 @ £200.00
-   When: Mon 05 Oct 14:30–15:30 (Europe/London)
-   Stop: £185.00
+   $1,000.00 (10.0% of portfolio) ≈ 5 @ $200.00
+   When: Mon 05 Oct 09:30–10:30 (America/New_York)
+   Stop: $185.00
    Why: ema_cross_up
 
 Skip any trade you see after its window closes.
@@ -217,7 +219,7 @@ kestrel/data/
 kestrel/execution/
   types.py       Side, OrderIntent, Fill, Position, AccountState, Broker
 kestrel/backtest/
-  fills.py       slippage models, eToro cost structure, long-only enforcement
+  fills.py       slippage models, Webull cost structure, long-only enforcement
   portfolio.py   cash, FIFO lot matching, trade log
   engine.py      the event loop, Context, Strategy and RiskGate protocols
   walkforward.py rolling/anchored splits with purging

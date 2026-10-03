@@ -1,7 +1,7 @@
 """Core data types and the source protocol.
 
 The `BarSource` protocol is deliberately separate from anything broker-shaped.
-eToro's API does serve candles, but an eToro bar source is just one
+Webull's Market Data API serves bars, but a Webull bar source is just one
 implementation among several (CSV, cache, synthetic). Keeping them apart means
 the backtest never depends on the broker being reachable.
 """

@@ -5,19 +5,20 @@ at the open of bar `t+1`**. Filling at the close of bar `t` would let the
 strategy trade at a price it used to make the decision, which inflates results
 and is the classic way a backtest lies to you.
 
-Cost model is eToro (UK) shaped:
+Cost model is Webull (US account) shaped. Other Webull regions charge
+differently — set the rates in config rather than trusting these defaults:
 
-* **Stocks and ETFs: no commission.** `commission_bps` stays configurable so a
-  stress test can add one.
-* **Crypto: 1% per side**, charged on every crypto buy and sell — about 2% round
-  trip. That is roughly seven times the stock cost and decides on its own
-  whether a crypto signal is worth acting on; a strategy that turns crypto over
-  weekly will not clear it.
-* **FX fee: 0.75%** on the converted value whenever a trade converts between
-  currencies. eToro converts when money moves between your GBP and USD
-  balances, so this applies per trade only if you buy USD instruments straight
-  from a GBP balance. Fund a USD balance once instead and the fee is paid on
-  that deposit, not on every trade — then leave `fx_symbols` empty.
+* **US stocks and ETFs: no commission.** Webull Hong Kong, Singapore, Malaysia
+  and others charge commission and platform fees; put their all-in rate in
+  `commission_bps`.
+* **Crypto: 1% per side.** Webull charges no crypto commission but quotes 1% off
+  the mid price on every buy and sell, which costs exactly the same as a fee.
+  About 2% round trip — enough on its own to decide whether a crypto signal is
+  worth acting on. A strategy that turns crypto over weekly will not clear it.
+* **FX fee: zero by default.** The account trades in USD; converting your local
+  currency happens once, when you deposit, not on every trade. The mechanism
+  stays for instruments that do convert per trade (e.g. HK stocks from a USD
+  balance): list them in `fx_symbols` and set `fx_fee_bps`.
 * **Slippage:** a fixed bps haircut against the fill. A constant is a crude
   model; it is honest for liquid large caps on daily bars and optimistic for
   anything thin. `SpreadSlippage` is available when a bar's own range is a
@@ -32,12 +33,11 @@ from typing import Protocol
 
 from kestrel.execution.types import Fill, OrderIntent, OrderType, Side
 
-#: eToro's GBP/EUR -> USD conversion fee, in basis points.
-ETORO_FX_FEE_BPS = 75.0
-#: eToro's crypto fee, charged on each side of a crypto trade, in basis points.
-ETORO_CRYPTO_FEE_BPS = 100.0
-#: eToro's minimum trade size (USD 10 for stocks and crypto).
-ETORO_MIN_ORDER_VALUE = 10.0
+#: Webull's crypto spread, 1% from mid on each side, in basis points.
+WEBULL_CRYPTO_FEE_BPS = 100.0
+#: Webull's minimum fractional stock order, USD 5. (Crypto's is USD 1; the
+#: stock minimum is the binding one for sizing.)
+WEBULL_MIN_ORDER_VALUE = 5.0
 
 
 class SlippageModel(Protocol):
@@ -85,22 +85,22 @@ class FillModel:
 
     Args:
         slippage: how the fill price is degraded.
-        commission_bps: per-trade commission on every fill. 0 on eToro.
+        commission_bps: per-trade commission on every fill. 0 on Webull US.
         crypto_fee_bps: added to the commission when `is_crypto` is True.
         fx_fee_bps: conversion fee applied when `requires_fx` is True.
         min_order_value: orders below this notional are dropped unfilled.
-            eToro's minimum is USD 10; sizing can produce sub-minimum orders
-            for tiny signals on a small account.
+            Webull's fractional minimum is USD 5; sizing can produce
+            sub-minimum orders for tiny signals on a small account.
         allow_short: when False, sell orders may only reduce an existing long.
-            On eToro a short is a CFD, not a position in the asset, so Kestrel
-            keeps this False: every holding is one you actually own.
+            Shorting needs a Webull margin account and is impossible for crypto,
+            so Kestrel keeps this False: a cash account, long-or-flat.
     """
 
     slippage: SlippageModel = FixedBpsSlippage(2.0)
     commission_bps: float = 0.0
-    crypto_fee_bps: float = ETORO_CRYPTO_FEE_BPS
-    fx_fee_bps: float = ETORO_FX_FEE_BPS
-    min_order_value: float = ETORO_MIN_ORDER_VALUE
+    crypto_fee_bps: float = WEBULL_CRYPTO_FEE_BPS
+    fx_fee_bps: float = 0.0
+    min_order_value: float = WEBULL_MIN_ORDER_VALUE
     allow_short: bool = False
 
     def __post_init__(self) -> None:

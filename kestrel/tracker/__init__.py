@@ -1,7 +1,7 @@
 """Portfolio tracking: point-in-time snapshots and the weekly summary.
 
 Pure apart from `SnapshotLog`, which reads and writes one local file. Snapshots
-come from the broker (eToro); this package only requires that every value is
+come from the broker (Webull); this package only requires that every value is
 already in the base currency.
 """
 

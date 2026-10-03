@@ -215,7 +215,7 @@ async def test_round_trip_in_a_flat_market_loses_the_fx_round_trip():
 
 
 async def test_long_only_engine_refuses_to_short(frictionless):
-    """Kestrel holds only real longs on eToro; a naked sell must be rejected."""
+    """A cash account cannot short; a naked sell must be rejected."""
 
     class SellFirst:
         name = "sell_first"

@@ -159,7 +159,7 @@ def test_losing_trade_signs_correctly():
 
 
 def test_short_round_trip_profits_when_price_falls():
-    """Not reachable through eToro (a short there is a CFD), but the maths must be right."""
+    """Not reachable from a Webull cash account, but the maths must be right."""
     p = Portfolio(10_000.0)
     p.apply(sell(10, 100.0, 1))
     assert p.quantity("X") == -10.0

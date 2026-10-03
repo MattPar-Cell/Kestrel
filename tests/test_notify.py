@@ -44,7 +44,9 @@ def test_recommendation_message_says_what_how_much_and_when():
         order_type=OrderType.STOP,
         stop_price=185,
     )
-    text = format_recommendations([r], equity=10_000, cash=2_500, currency="GBP")
+    text = format_recommendations(
+        [r], equity=10_000, cash=2_500, currency="GBP", timezone="Europe/London"
+    )
     assert text == (
         "Kestrel: 1 trade\n"
         "Portfolio £10,000.00 · cash £2,500.00 (25.0%)\n"

@@ -119,9 +119,8 @@ class BacktestEngine:
         """
         Args:
             fx_symbols: symbols bought across currencies, so FX fees apply on
-                every fill. On eToro that is any USD instrument traded straight
-                from a GBP balance; omit one and the backtest understates its
-                costs by 75bps per side.
+                every fill (e.g. HK stocks from a USD balance). Omit one and the
+                backtest understates its costs by `fx_fee_bps` per side.
             crypto_symbols: symbols that pay the crypto fee on every fill.
         """
         self.fill_model = fill_model or FillModel()

@@ -46,12 +46,12 @@ def test_live_environment_is_rejected():
 def test_paper_environment_requires_broker_key():
     with pytest.raises(ValidationError, match="BROKER_API_KEY"):
         _settings(environment="paper")
-    ok = _settings(environment="paper", broker_api_key="dummy", broker_user_key="dummy")
+    ok = _settings(environment="paper", broker_api_key="dummy", broker_api_secret="dummy")
     assert ok.broker_api_key.get_secret_value() == "dummy"
 
 
 def test_secrets_are_not_printed_in_repr():
-    s = _settings(broker_user_key="super-secret-token")
+    s = _settings(broker_api_secret="super-secret-token")
     assert "super-secret-token" not in repr(s)
 
 
@@ -72,23 +72,31 @@ def test_invalid_values_are_rejected(overrides):
         _settings(**overrides)
 
 
-# ---- eToro specifics -------------------------------------------------------
-def test_etoro_cost_defaults():
-    """No stock commission, 1% crypto fee each side, 0.75% FX, USD 10 minimum."""
+# ---- Webull specifics ------------------------------------------------------
+def test_webull_cost_defaults():
+    """US account: no stock commission, 1% crypto spread each side, no FX, USD 5 min."""
     s = _settings()
+    assert s.base_currency == "USD"
+    assert s.broker_region == "us"
     assert s.commission_bps == 0.0
     assert s.crypto_fee_bps == 100.0
-    assert s.fx_fee_bps == 75.0
-    assert s.min_order_value == 10.0
+    assert s.fx_fee_bps == 0.0
+    assert s.min_order_value == 5.0
+
+
+def test_broker_region_is_normalised_and_validated():
+    assert _settings(broker_region="MY").broker_region == "my"
+    with pytest.raises(ValidationError, match="broker_region"):
+        _settings(broker_region="moon")
 
 
 def test_paper_needs_both_halves_of_the_key_pair():
-    with pytest.raises(ValidationError, match="BROKER_USER_KEY"):
+    with pytest.raises(ValidationError, match="BROKER_API_SECRET"):
         _settings(environment="paper", broker_api_key="dummy")
 
 
 def test_shorting_is_off_by_default():
-    """An eToro short is a CFD, not a holding."""
+    """A cash account cannot short, and crypto never can."""
     assert _settings().allow_short is False
 
 

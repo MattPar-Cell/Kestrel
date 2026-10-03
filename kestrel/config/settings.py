@@ -15,10 +15,10 @@ Design notes worth knowing before Phase 3:
   set explicitly rather than inherited from a default. Phase 3 code should
   refuse to arm the hard-stop while these are `None`.
 * Kelly sizing is off by default (`sizing_mode="vol_target"`).
-* `allow_short` defaults to False. On eToro a short (or anything leveraged
-  above 1x) is a CFD rather than the asset itself, so Kestrel only ever holds
-  real, unleveraged longs and a signed signal expresses long-or-flat.
-* Stocks, ETFs, and crypto all sit in one eToro account behind one key pair.
+* `allow_short` defaults to False. Shorting needs a Webull margin account and
+  is impossible for crypto, so Kestrel assumes a cash account: long-or-flat.
+* Stocks, ETFs, and crypto all sit in one Webull account behind one App Key /
+  App Secret pair. What the API can reach depends on `broker_region`.
 """
 
 from __future__ import annotations
@@ -63,27 +63,29 @@ class Settings(BaseSettings):
     environment: Environment = Environment.BACKTEST
 
     # ---- universe & data -------------------------------------------------
-    #: eToro instrument symbols, e.g. "AAPL", "BTC". The API trades by numeric
-    #: instrument id, so the adapter resolves each symbol once and caches it.
+    #: Webull symbols, e.g. "AAPL", "BTCUSD". The API trades by instrument id,
+    #: so the adapter resolves each symbol once and caches it.
     symbols: tuple[str, ...] = ()
     timeframe: str = "1d"
     data_cache_dir: Path = REPO_ROOT / "data_cache"
 
-    #: Where bars come from. eToro's API serves candles; "csv" until that
-    #: adapter exists.
+    #: Where bars come from. Webull's Market Data API serves bars; "csv" until
+    #: that adapter exists.
     market_data_provider: str = "csv"
 
-    # ---- broker: eToro ---------------------------------------------------
+    # ---- broker: Webull --------------------------------------------------
+    #: Which Webull entity holds the account. Each region has its own API host
+    #: and its own product list — US is the one with crypto via the API.
+    broker_region: str = "us"
     #: Account base currency. Every instrument priced in anything else incurs
     #: the FX fee on both legs of every trade.
-    base_currency: str = "GBP"
-    #: An eToro short is a CFD. Leave False.
+    base_currency: str = "USD"
+    #: Requires a margin account, and never applies to crypto. Leave False.
     allow_short: bool = False
-    #: Instruments bought across currencies on every trade, which therefore pay
-    #: the FX fee both ways. Empty if you fund a USD balance once and trade US
-    #: instruments from it; list them if you trade them from a GBP balance.
+    #: Instruments that convert currency on every trade, so pay the FX fee both
+    #: ways. Usually empty: a USD account trading US stocks converts nothing.
     fx_symbols: tuple[str, ...] = ()
-    #: Instruments that pay eToro's crypto fee, e.g. "BTC,ETH".
+    #: Instruments that pay Webull's crypto spread, e.g. "BTCUSD,ETHUSD".
     crypto_symbols: tuple[str, ...] = ()
 
     # ---- risk (see module docstring) -------------------------------------
@@ -98,15 +100,15 @@ class Settings(BaseSettings):
     kelly_fraction: float = Field(default=0.25, gt=0, le=1)
 
     # ---- backtest fill model --------------------------------------------
-    #: Zero on eToro for stocks and ETFs.
+    #: Zero on Webull US for stocks and ETFs. Other regions charge — set it.
     commission_bps: float = Field(default=0.0, ge=0)
-    #: eToro's 1% crypto fee, each side.
+    #: Webull's 1% crypto spread, each side.
     crypto_fee_bps: float = Field(default=100.0, ge=0)
-    #: eToro's 0.75% GBP/USD conversion fee.
-    fx_fee_bps: float = Field(default=75.0, ge=0)
+    #: Per-trade conversion fee for `fx_symbols`. Zero for a USD account.
+    fx_fee_bps: float = Field(default=0.0, ge=0)
     slippage_bps: float = Field(default=2.0, ge=0)
-    #: Orders below this notional are rejected by the broker (eToro: USD 10).
-    min_order_value: float = Field(default=10.0, ge=0)
+    #: Orders below this notional are rejected by the broker (Webull: USD 5).
+    min_order_value: float = Field(default=5.0, ge=0)
 
     # ---- notifications: Signal ------------------------------------------
     #: Base URL of a signal-cli-rest-api instance you run yourself. Signal has no
@@ -117,17 +119,17 @@ class Settings(BaseSettings):
     #: Who receives messages: E.164 numbers or Signal group ids.
     signal_recipients: tuple[str, ...] = ()
     #: Times in messages are shown in this zone.
-    display_timezone: str = "Europe/London"
+    #: Set it to where you live, e.g. "America/New_York", "Asia/Kuala_Lumpur".
+    display_timezone: str = "UTC"
     #: Where the portfolio tracker appends its daily snapshots.
     snapshot_log: Path = REPO_ROOT / "data_cache" / "snapshots.jsonl"
 
     # ---- secrets ---------------------------------------------------------
-    #: eToro sends two headers: x-api-key (the Public API Key) and x-user-key
-    #: (the User Key, shown once at creation). Each key pair is bound to Demo or
-    #: Real; paper mode needs a Demo pair. Read permission is enough while
-    #: Kestrel only recommends trades.
+    #: Webull App Key and App Secret, from OpenAPI Management on the Webull
+    #: website once the API application is approved. Requests are signed with
+    #: the secret; it never leaves this process.
     broker_api_key: SecretStr | None = None
-    broker_user_key: SecretStr | None = None
+    broker_api_secret: SecretStr | None = None
     news_api_key: SecretStr | None = None
 
     # ---- validation ------------------------------------------------------
@@ -178,6 +180,16 @@ class Settings(BaseSettings):
                     )
         return self
 
+    @field_validator("broker_region")
+    @classmethod
+    def _known_region(cls, v: str) -> str:
+        """Each Webull region is a separate entity with its own API host."""
+        allowed = {"us", "hk", "sg", "au", "jp", "my", "br"}
+        region = v.strip().lower()
+        if region not in allowed:
+            raise ValueError(f"broker_region must be one of {sorted(allowed)}, got {v!r}")
+        return region
+
     @field_validator("display_timezone")
     @classmethod
     def _known_timezone(cls, v: str) -> str:
@@ -200,11 +212,11 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def _paper_needs_broker_creds(self) -> Settings:
         if self.environment is Environment.PAPER and not (
-            self.broker_api_key and self.broker_user_key
+            self.broker_api_key and self.broker_api_secret
         ):
             raise ValueError(
                 "environment='paper' requires KESTREL_BROKER_API_KEY and "
-                "KESTREL_BROKER_USER_KEY (an eToro Demo key pair)"
+                "KESTREL_BROKER_API_SECRET (a Webull App Key / App Secret pair)"
             )
         return self
 

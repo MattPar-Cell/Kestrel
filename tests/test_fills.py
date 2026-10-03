@@ -5,9 +5,8 @@ from datetime import UTC, datetime
 import pytest
 
 from kestrel.backtest.fills import (
-    ETORO_CRYPTO_FEE_BPS,
-    ETORO_FX_FEE_BPS,
-    ETORO_MIN_ORDER_VALUE,
+    WEBULL_CRYPTO_FEE_BPS,
+    WEBULL_MIN_ORDER_VALUE,
     FillModel,
     FixedBpsSlippage,
     SpreadSlippage,
@@ -59,11 +58,14 @@ def test_market_sell_fills_at_open_minus_slippage():
     assert f.cash_delta == pytest.approx(+998.00)
 
 
-# ---- eToro cost structure -------------------------------------------------
-def test_etoro_fx_fee_is_seventy_five_bps_and_charged_on_both_sides():
-    """Buying a USD stock from a GBP balance pays 0.75% each way — 150bps round trip."""
-    m = FillModel(slippage=FixedBpsSlippage(0.0), commission_bps=0.0)
-    assert m.fx_fee_bps == ETORO_FX_FEE_BPS == 75.0
+# ---- Webull cost structure ------------------------------------------------
+def test_fx_fee_is_off_by_default_for_a_usd_account():
+    assert FillModel().fx_fee_bps == 0.0
+
+
+def test_fx_fee_when_configured_is_charged_on_both_sides():
+    """An instrument that converts per trade at 0.75% pays it each way."""
+    m = FillModel(slippage=FixedBpsSlippage(0.0), commission_bps=0.0, fx_fee_bps=75.0)
 
     buy = fill(m, OrderIntent("X", Side.BUY, 10), requires_fx=True)
     # notional 1000.00; fx = 1000 * 75/10_000 = 7.50
@@ -81,9 +83,9 @@ def test_etoro_fx_fee_is_seventy_five_bps_and_charged_on_both_sides():
     assert buy.cash_delta + sell.cash_delta == pytest.approx(-15.00)
 
 
-def test_etoro_crypto_fee_is_one_percent_each_side():
+def test_webull_crypto_spread_is_one_percent_each_side():
     m = FillModel(slippage=FixedBpsSlippage(0.0))
-    assert m.crypto_fee_bps == ETORO_CRYPTO_FEE_BPS == 100.0
+    assert m.crypto_fee_bps == WEBULL_CRYPTO_FEE_BPS == 100.0
     buy = fill(m, OrderIntent("BTC", Side.BUY, 10), is_crypto=True)
     # notional 1000.00; fee = 1000 * 100/10_000 = 10.00, booked as commission
     assert buy.commission == pytest.approx(10.00)
@@ -98,7 +100,7 @@ def test_etoro_crypto_fee_is_one_percent_each_side():
 
 def test_crypto_and_fx_fees_stack():
     # 1000 notional: crypto 10.00 + fx 7.50
-    m = FillModel(slippage=FixedBpsSlippage(0.0))
+    m = FillModel(slippage=FixedBpsSlippage(0.0), fx_fee_bps=75.0)
     f = fill(m, OrderIntent("BTC", Side.BUY, 10), is_crypto=True, requires_fx=True)
     assert f.total_fees == pytest.approx(17.50)
 
@@ -108,12 +110,12 @@ def test_no_crypto_fee_on_stocks():
     assert fill(m, OrderIntent("X", Side.BUY, 10)).commission == 0.0
 
 
-def test_default_minimum_is_etoros_ten():
-    # 0.09 * 100 = 9.00 < 10; 0.1 * 100 = 10.00 fills
+def test_default_minimum_is_webulls_five():
+    # 0.049 * 100 = 4.90 < 5; 0.05 * 100 = 5.00 fills
     m = FillModel(slippage=FixedBpsSlippage(0.0))
-    assert m.min_order_value == ETORO_MIN_ORDER_VALUE == 10.0
-    assert fill(m, OrderIntent("X", Side.BUY, 0.09)) is None
-    assert fill(m, OrderIntent("X", Side.BUY, 0.1)) is not None
+    assert m.min_order_value == WEBULL_MIN_ORDER_VALUE == 5.0
+    assert fill(m, OrderIntent("X", Side.BUY, 0.049)) is None
+    assert fill(m, OrderIntent("X", Side.BUY, 0.05)) is not None
 
 
 def test_no_fx_fee_for_base_currency_instrument():
@@ -122,7 +124,7 @@ def test_no_fx_fee_for_base_currency_instrument():
     assert f.fx_fee == 0.0
 
 
-def test_commission_is_zero_by_default_for_etoro():
+def test_commission_is_zero_by_default_for_webull_us():
     assert FillModel().commission_bps == 0.0
 
 
@@ -132,7 +134,7 @@ def test_commission_applies_when_configured():
     assert f.commission == pytest.approx(0.50)  # 1000 * 5/10_000
 
 
-# ---- long-only enforcement (eToro shorts are CFDs) ------------------------
+# ---- long-only enforcement (cash account) ---------------------------------
 def test_sell_without_a_position_is_rejected_when_shorting_disallowed():
     m = FillModel(allow_short=False)
     assert fill(m, OrderIntent("X", Side.SELL, 10), available_quantity=0.0) is None

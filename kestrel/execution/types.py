@@ -2,7 +2,7 @@
 
 This module is the seam that lets the backtest and live trading run the same
 strategy and risk code. A strategy emits `OrderIntent`s and consumes `Fill`s; it
-never knows whether a `Broker` implementation is a simulator or eToro.
+never knows whether a `Broker` implementation is a simulator or Webull.
 
 Nothing here does I/O, so it is safe to import from pure modules.
 """
@@ -45,7 +45,7 @@ class OrderIntent:
     anything reaching a broker, and they are allowed to shrink or reject it.
 
     `quantity` is always positive; direction lives in `side`. Fractional
-    quantities are permitted — eToro sizes positions by amount, not shares, and
+    quantities are permitted — Webull supports fractional shares and crypto, and
     volatility-based sizing almost never lands on a whole number.
     """
 
@@ -135,8 +135,8 @@ class Position:
     """A net holding in one symbol.
 
     `quantity` is signed: negative means short. Short positions are
-    representable here but rejected by the eToro broker adapter, because an
-    eToro short is a CFD rather than a holding in the asset.
+    representable here but rejected by the Webull broker adapter, because
+    Kestrel assumes a cash account, which cannot short.
     """
 
     symbol: str
@@ -191,7 +191,7 @@ class AccountState:
 
 @runtime_checkable
 class Broker(Protocol):
-    """The interface both the simulator and eToro implement."""
+    """The interface both the simulator and Webull implement."""
 
     name: str
 

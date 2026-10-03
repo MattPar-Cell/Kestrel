@@ -73,7 +73,7 @@ def format_recommendations(
     equity: float,
     cash: float,
     currency: str,
-    timezone: str = "Europe/London",
+    timezone: str = "UTC",
 ) -> str:
     """One message covering every recommendation from a single decision point."""
     if equity <= 0:
@@ -123,7 +123,7 @@ def format_recommendations(
 
 
 def format_weekly_summary(
-    s: WeeklySummary, currency: str, timezone: str = "Europe/London", top_movers: int = 3
+    s: WeeklySummary, currency: str, timezone: str = "UTC", top_movers: int = 3
 ) -> str:
     tz = ZoneInfo(timezone)
     m = lambda x: format_money(x, currency)  # noqa: E731

@@ -8,9 +8,8 @@ from kestrel.backtest.engine import (
     Strategy,
 )
 from kestrel.backtest.fills import (
-    ETORO_CRYPTO_FEE_BPS,
-    ETORO_FX_FEE_BPS,
-    ETORO_MIN_ORDER_VALUE,
+    WEBULL_CRYPTO_FEE_BPS,
+    WEBULL_MIN_ORDER_VALUE,
     FillModel,
     FixedBpsSlippage,
     SpreadSlippage,
@@ -26,9 +25,6 @@ from kestrel.backtest.walkforward import (
 )
 
 __all__ = [
-    "ETORO_CRYPTO_FEE_BPS",
-    "ETORO_FX_FEE_BPS",
-    "ETORO_MIN_ORDER_VALUE",
     "BacktestEngine",
     "BacktestResult",
     "ClosedTrade",
@@ -42,6 +38,8 @@ __all__ = [
     "SpreadSlippage",
     "SplitScheme",
     "Strategy",
+    "WEBULL_CRYPTO_FEE_BPS",
+    "WEBULL_MIN_ORDER_VALUE",
     "WalkForwardReport",
     "Window",
     "run_walk_forward",
