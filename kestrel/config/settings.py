@@ -15,11 +15,10 @@ Design notes worth knowing before Phase 3:
   set explicitly rather than inherited from a default. Phase 3 code should
   refuse to arm the hard-stop while these are `None`.
 * Kelly sizing is off by default (`sizing_mode="vol_target"`).
-* `allow_short` defaults to False. Trading 212 Invest and Stocks ISA accounts
-  cannot sell short, so a signed signal can only ever express long-or-flat.
-* Stocks and crypto live at different venues. Trading 212's public API covers
-  Invest/ISA only — its crypto product is not reachable through it — so crypto
-  balances come from a separate exchange (Kraken) with its own key pair.
+* `allow_short` defaults to False. On eToro a short (or anything leveraged
+  above 1x) is a CFD rather than the asset itself, so Kestrel only ever holds
+  real, unleveraged longs and a signed signal expresses long-or-flat.
+* Stocks, ETFs, and crypto all sit in one eToro account behind one key pair.
 """
 
 from __future__ import annotations
@@ -64,25 +63,28 @@ class Settings(BaseSettings):
     environment: Environment = Environment.BACKTEST
 
     # ---- universe & data -------------------------------------------------
-    #: Trading 212 instrument tickers, e.g. "AAPL_US_EQ". Its API uses its own
-    #: ticker format, which does NOT match the market-data provider's — the
-    #: Phase 6 adapter needs a mapping table, not string equality.
+    #: eToro instrument symbols, e.g. "AAPL", "BTC". The API trades by numeric
+    #: instrument id, so the adapter resolves each symbol once and caches it.
     symbols: tuple[str, ...] = ()
     timeframe: str = "1d"
     data_cache_dir: Path = REPO_ROOT / "data_cache"
 
-    #: Trading 212 has no historical price endpoint, so bars come from elsewhere.
+    #: Where bars come from. eToro's API serves candles; "csv" until that
+    #: adapter exists.
     market_data_provider: str = "csv"
 
-    # ---- broker: Trading 212 --------------------------------------------
+    # ---- broker: eToro ---------------------------------------------------
     #: Account base currency. Every instrument priced in anything else incurs
     #: the FX fee on both legs of every trade.
     base_currency: str = "GBP"
-    #: Invest and Stocks ISA cannot short. Leave False unless the broker changes.
+    #: An eToro short is a CFD. Leave False.
     allow_short: bool = False
-    #: Instruments not denominated in `base_currency`, which therefore pay the
-    #: FX fee. For a GBP account trading US stocks, this is all of them.
+    #: Instruments bought across currencies on every trade, which therefore pay
+    #: the FX fee both ways. Empty if you fund a USD balance once and trade US
+    #: instruments from it; list them if you trade them from a GBP balance.
     fx_symbols: tuple[str, ...] = ()
+    #: Instruments that pay eToro's crypto fee, e.g. "BTC,ETH".
+    crypto_symbols: tuple[str, ...] = ()
 
     # ---- risk (see module docstring) -------------------------------------
     account_equity: float = Field(default=100_000.0, gt=0)
@@ -96,13 +98,15 @@ class Settings(BaseSettings):
     kelly_fraction: float = Field(default=0.25, gt=0, le=1)
 
     # ---- backtest fill model --------------------------------------------
-    #: Zero on Trading 212 Invest/ISA — there is no per-trade commission.
+    #: Zero on eToro for stocks and ETFs.
     commission_bps: float = Field(default=0.0, ge=0)
-    #: Trading 212's 0.15% FX conversion fee.
-    fx_fee_bps: float = Field(default=15.0, ge=0)
+    #: eToro's 1% crypto fee, each side.
+    crypto_fee_bps: float = Field(default=100.0, ge=0)
+    #: eToro's 0.75% GBP/USD conversion fee.
+    fx_fee_bps: float = Field(default=75.0, ge=0)
     slippage_bps: float = Field(default=2.0, ge=0)
-    #: Orders below this notional are rejected by the broker.
-    min_order_value: float = Field(default=1.0, ge=0)
+    #: Orders below this notional are rejected by the broker (eToro: USD 10).
+    min_order_value: float = Field(default=10.0, ge=0)
 
     # ---- notifications: Signal ------------------------------------------
     #: Base URL of a signal-cli-rest-api instance you run yourself. Signal has no
@@ -118,21 +122,21 @@ class Settings(BaseSettings):
     snapshot_log: Path = REPO_ROOT / "data_cache" / "snapshots.jsonl"
 
     # ---- secrets ---------------------------------------------------------
-    #: Trading 212 key pair (stocks/ETFs).
+    #: eToro sends two headers: x-api-key (the Public API Key) and x-user-key
+    #: (the User Key, shown once at creation). Each key pair is bound to Demo or
+    #: Real; paper mode needs a Demo pair. Read permission is enough while
+    #: Kestrel only recommends trades.
     broker_api_key: SecretStr | None = None
-    broker_api_secret: SecretStr | None = None
-    #: Kraken key pair (crypto). Read-only permissions are enough for tracking.
-    crypto_api_key: SecretStr | None = None
-    crypto_api_secret: SecretStr | None = None
-    #: Market-data provider key (stock bars). Kraken's OHLC endpoint is public.
-    market_data_api_key: SecretStr | None = None
+    broker_user_key: SecretStr | None = None
     news_api_key: SecretStr | None = None
 
     # ---- validation ------------------------------------------------------
-    @field_validator("symbols", "fx_symbols", "signal_recipients", mode="before")
+    @field_validator(
+        "symbols", "fx_symbols", "crypto_symbols", "signal_recipients", mode="before"
+    )
     @classmethod
     def _split_symbols(cls, v: object) -> object:
-        """Accept `KESTREL_SYMBOLS=AAPL_US_EQ,MSFT_US_EQ` as well as a real list."""
+        """Accept `KESTREL_SYMBOLS=AAPL,BTC` as well as a real list."""
         if isinstance(v, str):
             return tuple(s.strip() for s in v.split(",") if s.strip())
         return v
@@ -163,14 +167,15 @@ class Settings(BaseSettings):
         return code
 
     @model_validator(mode="after")
-    def _fx_symbols_are_in_the_universe(self) -> Settings:
-        """A typo in `fx_symbols` would silently understate costs by 15bps a side."""
+    def _fee_lists_are_in_the_universe(self) -> Settings:
+        """A typo in a fee list would silently drop that fee from the backtest."""
         if self.symbols:
-            unknown = set(self.fx_symbols) - set(self.symbols)
-            if unknown:
-                raise ValueError(
-                    f"fx_symbols contains symbols not in the universe: {sorted(unknown)}"
-                )
+            for name in ("fx_symbols", "crypto_symbols"):
+                unknown = set(getattr(self, name)) - set(self.symbols)
+                if unknown:
+                    raise ValueError(
+                        f"{name} contains symbols not in the universe: {sorted(unknown)}"
+                    )
         return self
 
     @field_validator("display_timezone")
@@ -194,8 +199,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _paper_needs_broker_creds(self) -> Settings:
-        if self.environment is Environment.PAPER and not self.broker_api_key:
-            raise ValueError("environment='paper' requires KESTREL_BROKER_API_KEY")
+        if self.environment is Environment.PAPER and not (
+            self.broker_api_key and self.broker_user_key
+        ):
+            raise ValueError(
+                "environment='paper' requires KESTREL_BROKER_API_KEY and "
+                "KESTREL_BROKER_USER_KEY (an eToro Demo key pair)"
+            )
         return self
 
     # ---- derived ---------------------------------------------------------

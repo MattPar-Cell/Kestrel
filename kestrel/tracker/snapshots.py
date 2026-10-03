@@ -27,7 +27,7 @@ class Holding:
     price: float
     #: Average cost per unit, base currency. None if the venue does not report it.
     avg_cost: float | None = None
-    #: Where it is held, e.g. "trading212" or "kraken". Informational only.
+    #: Where it is held, e.g. "etoro". Informational only.
     venue: str = ""
 
     def __post_init__(self) -> None:

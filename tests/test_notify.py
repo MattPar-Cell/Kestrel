@@ -36,7 +36,7 @@ def test_format_money():
 def test_recommendation_message_says_what_how_much_and_when():
     # 5 shares @ £200 = £1,000 = 10% of £10,000
     r = rec(
-        "AAPL_US_EQ",
+        "AAPL",
         Side.BUY,
         5,
         200,
@@ -49,7 +49,7 @@ def test_recommendation_message_says_what_how_much_and_when():
         "Kestrel: 1 trade\n"
         "Portfolio £10,000.00 · cash £2,500.00 (25.0%)\n"
         "\n"
-        "1. BUY AAPL_US_EQ\n"
+        "1. BUY AAPL\n"
         "   £1,000.00 (10.0% of portfolio) ≈ 5 @ £200.00\n"
         "   When: Mon 05 Oct 14:30–15:30 (Europe/London)\n"
         "   Stop: £185.00\n"
@@ -61,9 +61,9 @@ def test_recommendation_message_says_what_how_much_and_when():
 
 def test_sells_listed_first_and_overspend_is_flagged():
     # buys 2 * 1_000 = 2_000; cash 500 + sell 0.01 * 50_000 = 1_000 -> warn
-    recs = [rec("MSFT_US_EQ", Side.BUY, 2, 1_000), rec("BTC", Side.SELL, 0.01, 50_000)]
+    recs = [rec("MSFT", Side.BUY, 2, 1_000), rec("BTC", Side.SELL, 0.01, 50_000)]
     text = format_recommendations(recs, equity=5_000, cash=500, currency="GBP")
-    assert text.index("SELL BTC") < text.index("BUY MSFT_US_EQ")
+    assert text.index("SELL BTC") < text.index("BUY MSFT")
     assert "⚠ Buys total £2,000.00 but cash plus sells is £1,000.00." in text
 
 

@@ -20,19 +20,20 @@ portfolio tracker, weekly summary) are in, but nothing generates trades yet.
 
 ### What is still missing before a Signal message means anything
 
-1. **A market-data adapter.** Only synthetic bars exist. Stocks need a provider
-   (Trading 212 has no price history); crypto can use Kraken's public OHLC.
+1. **A market-data adapter.** Only synthetic bars exist. eToro's candles can
+   supply both stocks and crypto.
 2. **A strategy (Phase 2)** and a **sizer + risk gate (Phase 3)**. "Buy £X of Y"
    is exactly what these two produce. Until they exist and have been
    walk-forward tested, a recommendation is a number with nothing behind it.
-3. **Read-only venue adapters** — Trading 212 and Kraken → `Snapshot`, plus a
-   GBP conversion for crypto balances. The tracker is built from these.
+3. **A read-only eToro adapter** — account → `Snapshot`, converted to GBP. The
+   tracker is built from it.
 4. **A scheduler**: a daily job (decide after close → Signal message; append a
    snapshot) and a weekly job (summary → Signal). Cron or a systemd timer is
    enough; the job must run somewhere that is always on.
 5. **The drawdown hard-stop choice** (still deliberately blank).
-6. **A crypto cost model.** The fill model knows Trading 212's FX fee, not
-   Kraken's maker/taker fees or crypto's 24/7 sessions.
+6. **Crypto's 24/7 calendar.** The fee model knows eToro's 1% crypto fee, but
+   annualisation and the "next open" timing in messages assume a market that
+   closes. Crypto does not.
 
 Live-money execution is not in this table. It happens only after Phase 6 results
 are reviewed; `KESTREL_ENVIRONMENT=live` is rejected by config validation today.
@@ -110,72 +111,60 @@ Two things are deliberately *not* defaulted:
 `KESTREL_RISK_PER_TRADE` defaults to 0.005 (0.5%) — the conservative end of the
 0.5–1% range, not a silent pick in the middle.
 
-## Broker: Trading 212
+## Broker: eToro
 
-Three properties of Trading 212's public API shape this codebase. They are not
-configuration details; each one changes what the strategy can be.
+One eToro account holds stocks, ETFs, and crypto, behind one API key pair. Four
+of its properties shape this codebase.
 
-**1. There is no historical price endpoint.** The API covers account data,
-instrument metadata, positions, orders, and history (filled orders, dividends,
-cash transactions, CSV exports) — but no OHLCV bars or candles. Market data has
-to come from a separate provider. That is why `data/` defines a `BarSource`
-protocol that knows nothing about brokers, and `execution/` defines a `Broker`
-protocol that knows nothing about bars. They are wired together only at the top
-level. Trading 212's ticker format (`AAPL_US_EQ`) will not match the data
-provider's (`AAPL`), so the Phase 6 adapter needs a mapping table.
+**1. Shorts and leverage turn a trade into a CFD.** On eToro, a "Sell" opening
+or any leverage above 1x does not buy the asset. It opens a CFD, which you do
+not own and which charges overnight fees. Kestrel therefore only ever
+recommends **Buy at 1x** and selling what is already held. `allow_short`
+defaults to `False` and the fill model clamps a sell to the quantity held. A
+signal expresses long-or-flat, which halves the opportunity set and makes
+results lopsided in a downtrend — build around it in Phase 2.
 
-**2. Invest and Stocks ISA accounts cannot short.** The public API is enabled
-only for those account types, and neither supports short selling. A signed
-momentum signal can therefore express long-or-flat, not long-or-short. This
-roughly halves the opportunity set and makes results asymmetric in a downtrend
-— a fact to build around in Phase 2, not discover in Phase 6. `allow_short`
-defaults to `False` and the fill model enforces it: a sell is clamped to the
-quantity actually held.
+**2. Crypto costs 1% each side.** About 2% round trip, against zero commission on
+stocks. That gap decides what the crypto half of a strategy can be: anything
+that turns crypto over weekly will not clear it. List crypto instruments in
+`KESTREL_CRYPTO_SYMBOLS` so the backtest charges the fee.
 
-**3. Commission is zero, but FX is not.** There is no per-trade commission on
-Invest/ISA. There is a 0.15% FX conversion fee whenever the instrument's
-currency differs from the account's — which, for a GBP account trading US
-equities, is every trade in both directions. About 30bps round-trip is the
-dominant cost in the model, and it is what decides whether a daily-bar strategy
-clears its own costs. List every non-base-currency instrument in
-`KESTREL_FX_SYMBOLS`; config rejects a ticker that is not in the universe, so a
-typo cannot quietly remove the fee.
+**3. Currency conversion is 0.75%, and *when* you pay it is up to you.** eToro
+converts when money moves between your GBP and USD balances. Convert once into a
+USD balance and buy US stocks and crypto from it, and that is the only time you
+pay — leave `KESTREL_FX_SYMBOLS` empty. Buy them straight from a GBP balance and
+every trade converts, 0.75% each way (1.5% round trip, worse than the crypto
+fee); then list those instruments in `KESTREL_FX_SYMBOLS`. Config rejects a
+symbol that is not in the universe, so a typo cannot quietly remove a fee.
 
-Also worth knowing: the API is v0 beta, rate limits are strict and per-endpoint,
-and **order endpoints are not idempotent** — a retried request can place a
-second order. Phase 6's adapter needs its own de-duplication; retry-on-timeout
-is not safe here.
+**4. Minimum trade is USD 10, and the API trades by instrument id.** Symbols in
+config are eToro's (`AAPL`, `BTC`); the adapter resolves each to eToro's numeric
+instrument id once and caches it.
 
-Sources: [Trading 212 API docs](https://docs.trading212.com/api),
-[rate limiting](https://docs.trading212.com/api/section/rate-limiting/how-it-works).
-
-## Crypto: Kraken, alongside Trading 212
-
-Trading 212's public API reaches Invest and Stocks ISA only; its crypto product
-is not exposed through it. Crypto therefore lives at a second venue, and Kestrel
-treats the two as separate: separate key pairs (`BROKER_*` and `CRYPTO_*`),
-separate adapters, one combined `Snapshot` in GBP. Kraken is the choice because
-it is FCA-registered, has a long-standing REST API with per-key permission
-scopes, and serves free public OHLC history, so it covers crypto data too.
+eToro's API also serves candles, so one key pair can cover prices as well as
+the account. `BarSource` and `Broker` stay separate protocols anyway, so a
+backtest never needs the broker to be reachable.
 
 ## Setup: keys and Signal
 
 Kestrel's default mode is **advisory**: it messages you and *you* place the
-trade. In that mode no key needs permission to trade — read scopes are enough,
-and a leaked key cannot move money. Only Phase 6 automated execution would need
-order scopes, and then only on the demo key first.
+trade in the eToro app. In that mode the key never needs permission to trade —
+**Read** is enough, and a leaked key cannot move money. Only Phase 6 automated
+execution would need **Write**, and only on a Demo key first.
 
-**Trading 212** (app → Settings → API (Beta) → Generate API key). Create it on
-the *practice* account first; demo and live keys are separate. Enable
-account data, portfolio, history, and metadata scopes; leave order execution
-and pies-write off. Restrict it to your server's IP if you can. The secret is
-shown once — put both values in `.env` as `KESTREL_BROKER_API_KEY` /
-`KESTREL_BROKER_API_SECRET`.
+**eToro.** Verify your account, then **Settings → Trading → API Key
+Management → Create New Key**. Each key is bound to one environment, so make
+two:
 
-**Kraken** (Settings → API → Create API key). Tick *Query Funds*, *Query Open
-Orders & Trades*, *Query Closed Orders & Trades*. Leave *Create & Modify
-Orders*, *Cancel/Close Orders*, and above all **Withdraw Funds** unticked. Store
-as `KESTREL_CRYPTO_API_KEY` / `KESTREL_CRYPTO_API_SECRET`.
+| Key | Environment | Permission | Used for |
+|---|---|---|---|
+| `kestrel-demo` | Demo | Read | development, `KESTREL_ENVIRONMENT=paper` |
+| `kestrel-real` | Real | Read | tracking your real portfolio |
+
+Each key comes as two values: the **Public API Key** (`x-api-key`) and the
+**User Key** (`x-user-key`). The User Key is shown **once** — paste it straight
+into `.env` as `KESTREL_BROKER_USER_KEY`, the other as `KESTREL_BROKER_API_KEY`.
+Anyone holding both can act on your account at whatever permission the key has.
 
 **Signal.** Signal has no bot API; run the `bbernhard/signal-cli-rest-api`
 container and link it to a Signal account as a secondary device. A spare number
@@ -205,7 +194,7 @@ portfolio now), and a window after which to ignore it:
 Kestrel: 1 trade
 Portfolio £10,000.00 · cash £2,500.00 (25.0%)
 
-1. BUY AAPL_US_EQ
+1. BUY AAPL
    £1,000.00 (10.0% of portfolio) ≈ 5 @ £200.00
    When: Mon 05 Oct 14:30–15:30 (Europe/London)
    Stop: £185.00
@@ -228,7 +217,7 @@ kestrel/data/
 kestrel/execution/
   types.py       Side, OrderIntent, Fill, Position, AccountState, Broker
 kestrel/backtest/
-  fills.py       slippage models, T212 cost structure, long-only enforcement
+  fills.py       slippage models, eToro cost structure, long-only enforcement
   portfolio.py   cash, FIFO lot matching, trade log
   engine.py      the event loop, Context, Strategy and RiskGate protocols
   walkforward.py rolling/anchored splits with purging

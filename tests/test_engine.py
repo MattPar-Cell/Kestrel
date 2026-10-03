@@ -148,6 +148,15 @@ async def test_flat_market_with_costs_loses_exactly_the_fees():
     assert result.final_equity == pytest.approx(10_000.0 - 0.285)
 
 
+async def test_crypto_symbols_pay_the_crypto_fee_through_the_engine():
+    """19 orders of 0.1 @ 100 = 10.00 notional; 1% crypto fee = 0.10 each, 1.90 total."""
+    frames = {"BTC": constant_bars(START, 20, 100.0)}
+    model = FillModel(slippage=FixedBpsSlippage(0.0), fx_fee_bps=0.0, min_order_value=0.0)
+    engine = BacktestEngine(model, starting_cash=10_000.0, crypto_symbols=frozenset({"BTC"}))
+    result = await engine.run(AlwaysBuy("BTC", 0.1), frames)
+    assert result.fees_paid == pytest.approx(1.90)
+
+
 async def test_strategy_that_never_trades_holds_starting_cash_flat():
     frames = {"X": linear_bars(START, 10, 100.0, 5.0)}
     result = await BacktestEngine(FillModel(), starting_cash=10_000.0).run(
@@ -206,7 +215,7 @@ async def test_round_trip_in_a_flat_market_loses_the_fx_round_trip():
 
 
 async def test_long_only_engine_refuses_to_short(frictionless):
-    """Trading 212 Invest/ISA cannot short; a naked sell must be rejected."""
+    """Kestrel holds only real longs on eToro; a naked sell must be rejected."""
 
     class SellFirst:
         name = "sell_first"

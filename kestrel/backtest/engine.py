@@ -114,18 +114,21 @@ class BacktestEngine:
         starting_cash: float = 100_000.0,
         risk_gate: RiskGate | None = None,
         fx_symbols: frozenset[str] | None = None,
+        crypto_symbols: frozenset[str] | None = None,
     ) -> None:
         """
         Args:
-            fx_symbols: symbols whose currency differs from the account's, so FX
-                fees apply. For a GBP Trading 212 account trading US equities
-                this is every symbol — pass them all, or the backtest will
-                understate costs by ~15bps per side.
+            fx_symbols: symbols bought across currencies, so FX fees apply on
+                every fill. On eToro that is any USD instrument traded straight
+                from a GBP balance; omit one and the backtest understates its
+                costs by 75bps per side.
+            crypto_symbols: symbols that pay the crypto fee on every fill.
         """
         self.fill_model = fill_model or FillModel()
         self.starting_cash = starting_cash
         self.risk_gate = risk_gate
         self.fx_symbols = fx_symbols or frozenset()
+        self.crypto_symbols = crypto_symbols or frozenset()
 
     async def run(
         self,
@@ -181,6 +184,7 @@ class BacktestEngine:
                     bar_low=float(r["low"]),
                     reference_price=last_price.get(intent.symbol),
                     requires_fx=intent.symbol in self.fx_symbols,
+                    is_crypto=intent.symbol in self.crypto_symbols,
                     available_quantity=max(held, 0.0) if intent.side is Side.SELL else None,
                 )
                 if fill is None:

@@ -46,12 +46,12 @@ def test_live_environment_is_rejected():
 def test_paper_environment_requires_broker_key():
     with pytest.raises(ValidationError, match="BROKER_API_KEY"):
         _settings(environment="paper")
-    ok = _settings(environment="paper", broker_api_key="dummy")
+    ok = _settings(environment="paper", broker_api_key="dummy", broker_user_key="dummy")
     assert ok.broker_api_key.get_secret_value() == "dummy"
 
 
 def test_secrets_are_not_printed_in_repr():
-    s = _settings(crypto_api_secret="super-secret-token")
+    s = _settings(broker_user_key="super-secret-token")
     assert "super-secret-token" not in repr(s)
 
 
@@ -72,17 +72,23 @@ def test_invalid_values_are_rejected(overrides):
         _settings(**overrides)
 
 
-# ---- Trading 212 specifics -------------------------------------------------
-def test_t212_cost_defaults():
-    """Invest/ISA: no commission, 0.15% FX fee."""
+# ---- eToro specifics -------------------------------------------------------
+def test_etoro_cost_defaults():
+    """No stock commission, 1% crypto fee each side, 0.75% FX, USD 10 minimum."""
     s = _settings()
     assert s.commission_bps == 0.0
-    assert s.fx_fee_bps == 15.0
-    assert s.min_order_value == 1.0
+    assert s.crypto_fee_bps == 100.0
+    assert s.fx_fee_bps == 75.0
+    assert s.min_order_value == 10.0
+
+
+def test_paper_needs_both_halves_of_the_key_pair():
+    with pytest.raises(ValidationError, match="BROKER_USER_KEY"):
+        _settings(environment="paper", broker_api_key="dummy")
 
 
 def test_shorting_is_off_by_default():
-    """Invest and Stocks ISA accounts cannot sell short."""
+    """An eToro short is a CFD, not a holding."""
     assert _settings().allow_short is False
 
 
@@ -92,12 +98,15 @@ def test_base_currency_is_normalised_and_validated():
         _settings(base_currency="POUNDS")
 
 
-def test_fx_symbols_must_be_in_the_universe():
-    """A typo here would understate costs by 15bps per side, silently."""
-    ok = _settings(symbols="AAPL_US_EQ,MSFT_US_EQ", fx_symbols="AAPL_US_EQ")
-    assert ok.fx_symbols == ("AAPL_US_EQ",)
-    with pytest.raises(ValidationError, match="not in the universe"):
-        _settings(symbols="AAPL_US_EQ", fx_symbols="TYPO_US_EQ")
+def test_fee_lists_must_be_in_the_universe():
+    """A typo here would silently drop a fee from the backtest."""
+    ok = _settings(symbols="AAPL,BTC", fx_symbols="AAPL", crypto_symbols="BTC")
+    assert ok.fx_symbols == ("AAPL",)
+    assert ok.crypto_symbols == ("BTC",)
+    with pytest.raises(ValidationError, match="fx_symbols"):
+        _settings(symbols="AAPL", fx_symbols="APPL")
+    with pytest.raises(ValidationError, match="crypto_symbols"):
+        _settings(symbols="AAPL,BTC", crypto_symbols="BTCC")
 
 
 def test_signal_recipients_parse_and_configured_flag():

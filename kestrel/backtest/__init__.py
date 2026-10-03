@@ -8,7 +8,9 @@ from kestrel.backtest.engine import (
     Strategy,
 )
 from kestrel.backtest.fills import (
-    T212_FX_FEE_BPS,
+    ETORO_CRYPTO_FEE_BPS,
+    ETORO_FX_FEE_BPS,
+    ETORO_MIN_ORDER_VALUE,
     FillModel,
     FixedBpsSlippage,
     SpreadSlippage,
@@ -24,7 +26,9 @@ from kestrel.backtest.walkforward import (
 )
 
 __all__ = [
-    "T212_FX_FEE_BPS",
+    "ETORO_CRYPTO_FEE_BPS",
+    "ETORO_FX_FEE_BPS",
+    "ETORO_MIN_ORDER_VALUE",
     "BacktestEngine",
     "BacktestResult",
     "ClosedTrade",

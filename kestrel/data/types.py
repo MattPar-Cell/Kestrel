@@ -1,9 +1,9 @@
 """Core data types and the source protocol.
 
 The `BarSource` protocol is deliberately separate from anything broker-shaped.
-Trading 212's public API has no historical price endpoint, so bars come from a
-different provider than orders do. Keeping them apart means the backtest never
-depends on the broker being reachable.
+eToro's API does serve candles, but an eToro bar source is just one
+implementation among several (CSV, cache, synthetic). Keeping them apart means
+the backtest never depends on the broker being reachable.
 """
 
 from __future__ import annotations

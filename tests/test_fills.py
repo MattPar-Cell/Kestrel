@@ -5,7 +5,9 @@ from datetime import UTC, datetime
 import pytest
 
 from kestrel.backtest.fills import (
-    T212_FX_FEE_BPS,
+    ETORO_CRYPTO_FEE_BPS,
+    ETORO_FX_FEE_BPS,
+    ETORO_MIN_ORDER_VALUE,
     FillModel,
     FixedBpsSlippage,
     SpreadSlippage,
@@ -57,26 +59,61 @@ def test_market_sell_fills_at_open_minus_slippage():
     assert f.cash_delta == pytest.approx(+998.00)
 
 
-# ---- Trading 212 cost structure -------------------------------------------
-def test_t212_fx_fee_is_fifteen_bps_and_charged_on_both_sides():
-    """A GBP account buying a US stock pays 0.15% each way — ~30bps round trip."""
+# ---- eToro cost structure -------------------------------------------------
+def test_etoro_fx_fee_is_seventy_five_bps_and_charged_on_both_sides():
+    """Buying a USD stock from a GBP balance pays 0.75% each way — 150bps round trip."""
     m = FillModel(slippage=FixedBpsSlippage(0.0), commission_bps=0.0)
-    assert m.fx_fee_bps == T212_FX_FEE_BPS == 15.0
+    assert m.fx_fee_bps == ETORO_FX_FEE_BPS == 75.0
 
     buy = fill(m, OrderIntent("X", Side.BUY, 10), requires_fx=True)
-    # notional 1000.00; fx = 1000 * 15/10_000 = 1.50
+    # notional 1000.00; fx = 1000 * 75/10_000 = 7.50
     assert buy.commission == 0.0
-    assert buy.fx_fee == pytest.approx(1.50)
-    assert buy.cash_delta == pytest.approx(-1001.50)
+    assert buy.fx_fee == pytest.approx(7.50)
+    assert buy.cash_delta == pytest.approx(-1007.50)
 
     sell = m.simulate(
         OrderIntent("X", Side.SELL, 10), timestamp=TS, bar_open=100.0, bar_high=102.0,
         bar_low=98.0, requires_fx=True, available_quantity=10.0,
     )
-    assert sell.fx_fee == pytest.approx(1.50)
-    assert sell.cash_delta == pytest.approx(+998.50)
+    assert sell.fx_fee == pytest.approx(7.50)
+    assert sell.cash_delta == pytest.approx(+992.50)
     # round trip at an unchanged price loses exactly the two FX fees
-    assert buy.cash_delta + sell.cash_delta == pytest.approx(-3.00)
+    assert buy.cash_delta + sell.cash_delta == pytest.approx(-15.00)
+
+
+def test_etoro_crypto_fee_is_one_percent_each_side():
+    m = FillModel(slippage=FixedBpsSlippage(0.0))
+    assert m.crypto_fee_bps == ETORO_CRYPTO_FEE_BPS == 100.0
+    buy = fill(m, OrderIntent("BTC", Side.BUY, 10), is_crypto=True)
+    # notional 1000.00; fee = 1000 * 100/10_000 = 10.00, booked as commission
+    assert buy.commission == pytest.approx(10.00)
+    assert buy.fx_fee == 0.0
+    sell = m.simulate(
+        OrderIntent("BTC", Side.SELL, 10), timestamp=TS, bar_open=100.0, bar_high=102.0,
+        bar_low=98.0, is_crypto=True, available_quantity=10.0,
+    )
+    # unchanged price: 1000 in, 990 back out of the sell, 20 lost round trip
+    assert buy.cash_delta + sell.cash_delta == pytest.approx(-20.00)
+
+
+def test_crypto_and_fx_fees_stack():
+    # 1000 notional: crypto 10.00 + fx 7.50
+    m = FillModel(slippage=FixedBpsSlippage(0.0))
+    f = fill(m, OrderIntent("BTC", Side.BUY, 10), is_crypto=True, requires_fx=True)
+    assert f.total_fees == pytest.approx(17.50)
+
+
+def test_no_crypto_fee_on_stocks():
+    m = FillModel(slippage=FixedBpsSlippage(0.0))
+    assert fill(m, OrderIntent("X", Side.BUY, 10)).commission == 0.0
+
+
+def test_default_minimum_is_etoros_ten():
+    # 0.09 * 100 = 9.00 < 10; 0.1 * 100 = 10.00 fills
+    m = FillModel(slippage=FixedBpsSlippage(0.0))
+    assert m.min_order_value == ETORO_MIN_ORDER_VALUE == 10.0
+    assert fill(m, OrderIntent("X", Side.BUY, 0.09)) is None
+    assert fill(m, OrderIntent("X", Side.BUY, 0.1)) is not None
 
 
 def test_no_fx_fee_for_base_currency_instrument():
@@ -85,7 +122,7 @@ def test_no_fx_fee_for_base_currency_instrument():
     assert f.fx_fee == 0.0
 
 
-def test_commission_is_zero_by_default_for_t212():
+def test_commission_is_zero_by_default_for_etoro():
     assert FillModel().commission_bps == 0.0
 
 
@@ -95,7 +132,7 @@ def test_commission_applies_when_configured():
     assert f.commission == pytest.approx(0.50)  # 1000 * 5/10_000
 
 
-# ---- long-only enforcement (Trading 212 Invest / ISA) ---------------------
+# ---- long-only enforcement (eToro shorts are CFDs) ------------------------
 def test_sell_without_a_position_is_rejected_when_shorting_disallowed():
     m = FillModel(allow_short=False)
     assert fill(m, OrderIntent("X", Side.SELL, 10), available_quantity=0.0) is None

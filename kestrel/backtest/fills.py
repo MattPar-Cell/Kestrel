@@ -5,16 +5,19 @@ at the open of bar `t+1`**. Filling at the close of bar `t` would let the
 strategy trade at a price it used to make the decision, which inflates results
 and is the classic way a backtest lies to you.
 
-Cost model is Trading 212 Invest/ISA shaped:
+Cost model is eToro (UK) shaped:
 
-* **Commission: zero.** Trading 212 charges no per-trade commission on Invest
-  and Stocks ISA. `commission_bps` stays configurable so a different broker (or
-  a stress test) can be modelled, but 0 is the realistic default here.
-* **FX fee: 0.15%** on the converted value whenever the instrument's currency
-  differs from the account's. For a GBP account trading US equities this applies
-  to *every* trade, both directions, and at ~30bp round-trip it dominates the
-  cost model. Getting this wrong is the difference between a viable daily
-  strategy and a losing one.
+* **Stocks and ETFs: no commission.** `commission_bps` stays configurable so a
+  stress test can add one.
+* **Crypto: 1% per side**, charged on every crypto buy and sell — about 2% round
+  trip. That is roughly seven times the stock cost and decides on its own
+  whether a crypto signal is worth acting on; a strategy that turns crypto over
+  weekly will not clear it.
+* **FX fee: 0.75%** on the converted value whenever a trade converts between
+  currencies. eToro converts when money moves between your GBP and USD
+  balances, so this applies per trade only if you buy USD instruments straight
+  from a GBP balance. Fund a USD balance once instead and the fee is paid on
+  that deposit, not on every trade — then leave `fx_symbols` empty.
 * **Slippage:** a fixed bps haircut against the fill. A constant is a crude
   model; it is honest for liquid large caps on daily bars and optimistic for
   anything thin. `SpreadSlippage` is available when a bar's own range is a
@@ -29,8 +32,12 @@ from typing import Protocol
 
 from kestrel.execution.types import Fill, OrderIntent, OrderType, Side
 
-#: Trading 212's FX conversion fee on Invest/ISA accounts, in basis points.
-T212_FX_FEE_BPS = 15.0
+#: eToro's GBP/EUR -> USD conversion fee, in basis points.
+ETORO_FX_FEE_BPS = 75.0
+#: eToro's crypto fee, charged on each side of a crypto trade, in basis points.
+ETORO_CRYPTO_FEE_BPS = 100.0
+#: eToro's minimum trade size (USD 10 for stocks and crypto).
+ETORO_MIN_ORDER_VALUE = 10.0
 
 
 class SlippageModel(Protocol):
@@ -78,24 +85,26 @@ class FillModel:
 
     Args:
         slippage: how the fill price is degraded.
-        commission_bps: per-trade commission. 0 for Trading 212 Invest/ISA.
+        commission_bps: per-trade commission on every fill. 0 on eToro.
+        crypto_fee_bps: added to the commission when `is_crypto` is True.
         fx_fee_bps: conversion fee applied when `requires_fx` is True.
         min_order_value: orders below this notional are dropped unfilled.
-            Trading 212 enforces a small minimum (about £1 / $1); sizing can
-            produce sub-minimum orders for tiny signals on a small account.
+            eToro's minimum is USD 10; sizing can produce sub-minimum orders
+            for tiny signals on a small account.
         allow_short: when False, sell orders may only reduce an existing long.
-            Trading 212 Invest and Stocks ISA cannot short, so False is correct
-            for this broker.
+            On eToro a short is a CFD, not a position in the asset, so Kestrel
+            keeps this False: every holding is one you actually own.
     """
 
     slippage: SlippageModel = FixedBpsSlippage(2.0)
     commission_bps: float = 0.0
-    fx_fee_bps: float = T212_FX_FEE_BPS
-    min_order_value: float = 1.0
+    crypto_fee_bps: float = ETORO_CRYPTO_FEE_BPS
+    fx_fee_bps: float = ETORO_FX_FEE_BPS
+    min_order_value: float = ETORO_MIN_ORDER_VALUE
     allow_short: bool = False
 
     def __post_init__(self) -> None:
-        if self.commission_bps < 0 or self.fx_fee_bps < 0:
+        if min(self.commission_bps, self.crypto_fee_bps, self.fx_fee_bps) < 0:
             raise ValueError("fee rates must be non-negative")
         if self.min_order_value < 0:
             raise ValueError("min_order_value must be non-negative")
@@ -110,6 +119,7 @@ class FillModel:
         bar_low: float,
         reference_price: float | None = None,
         requires_fx: bool = False,
+        is_crypto: bool = False,
         available_quantity: float | None = None,
     ) -> Fill | None:
         """Attempt to fill `intent` against the bar that opens at `timestamp`.
@@ -137,13 +147,15 @@ class FillModel:
         if notional < self.min_order_value:
             return None
 
+        commission_bps = self.commission_bps + (self.crypto_fee_bps if is_crypto else 0.0)
+
         return Fill(
             symbol=intent.symbol,
             side=intent.side,
             quantity=quantity,
             price=price,
             timestamp=timestamp,
-            commission=notional * self.commission_bps / 10_000.0,
+            commission=notional * commission_bps / 10_000.0,
             fx_fee=notional * self.fx_fee_bps / 10_000.0 if requires_fx else 0.0,
             reference_price=reference_price,
             reason=intent.reason,
